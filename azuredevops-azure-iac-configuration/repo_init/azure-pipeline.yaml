@@ -1,0 +1,127 @@
+name: "Terraform Pipeline"
+
+
+pool:
+  agentpool: 'Self Hosted Private Cloud Agent Pool'
+
+trigger:
+  batch: true
+  branches:
+    include:
+      - master
+
+stages:
+  - stage: "planTerraform"
+    jobs:
+      - job: Plan
+        continueOnError: false
+        container:
+          image: <job container image>
+          endpoint: <your endpoint>
+
+        steps:
+          - checkout: self
+            fetchDepth: 1
+
+          - task: TerraformCLI@0
+            inputs:
+              command: "init"
+              backendType: "self-configured"
+            name: "init"
+            env:
+              HTTPS_PROXY: $(HTTPS_PROXY)
+              ARM_ACCESS_KEY: $(STORAGE_ACCOUNT_SECRET)
+            displayName: "Run > terraform init"
+
+          - task: TerraformCLI@0
+            inputs:
+              command: "plan"
+              publishPlanResults: "PlanResults"
+              commandOptions: "-var-file=values.tfvars -out=$(System.DefaultWorkingDirectory)/terraform.tfplan -detailed-exitcode"
+            name: "plan"
+            env:
+              HTTPS_PROXY: $(HTTPS_PROXY)
+              ARM_CLIENT_ID: $(AZURE_CLIENT_ID)
+              ARM_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+            displayName: "Run > terraform plan"
+
+          - task: ArchiveFiles@2
+            inputs:
+              rootFolderOrFile: '$(Build.SourcesDirectory)'
+              includeRootFolder: false
+              archiveType: 'tar'
+              tarCompression: 'gz'
+              archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId).tgz'
+              replaceExistingArchive: true
+            displayName: 'Create Plan Artifact'
+            name: "archive"
+
+          - task: Bash@3
+            inputs:
+              script: "openssl enc -aes-256-cbc -salt -in $(Build.ArtifactStagingDirectory)/$(Build.BuildId).tgz -out $(Build.ArtifactStagingDirectory)/$(Build.BuildId).tgz.enc -k $(AZURE_CLIENT_SECRET)"
+            displayName: 'Encrypt Plan Artifact'
+            name: "encrypt"
+
+          - task: PublishPipelineArtifact@1
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: 'drop'
+              publishLocation: 'Container'
+            displayName: 'Publish Plan Artifact'
+            name: "publish"
+
+
+  - stage: "applyTerraform"
+    displayName: "Terraform Apply"
+    dependsOn:
+      - "planTerraform"
+    jobs:
+      - job: "waitForApproval"
+        displayName: "Wait > Wait for manual approval"
+        pool: "server"
+        timeoutInMinutes: "361" # job times out in 3 days
+        steps:
+          - task: ManualValidation@0
+            timeoutInMinutes: "360" # task times out in 1 day
+            inputs:
+              #notifyUsers: |
+              #  ToDo: Create task to get last git committer and email him/her
+              instructions: "Check the Terraform Plan and approve the changes:"
+              onTimeout: "reject"
+
+      - job: "TerraformApprove"
+        container:
+          image: <job container image>
+          endpoint: <your endpoint>
+        displayName: "Terraform > install, init & apply"
+        dependsOn: "waitForValidation"
+        steps:
+
+          - task: DownloadPipelineArtifact@0
+            inputs:
+              artifactName: 'drop'
+            displayName: 'Download Plan Artifact'
+
+          - task: Bash@3
+            inputs:
+              script: "openssl enc -aes-256-cbc -d -in $(Build.ArtifactStagingDirectory)/$(Build.BuildId).tgz.enc -out $(Build.ArtifactStagingDirectory)/$(Build.BuildId).tgz -k $(AZURE_CLIENT_SECRET)"
+            displayName: 'Decrypt Plan Artifact'
+            name: "decrypt"
+
+          - task: ExtractFiles@1
+            inputs:
+              archiveFilePatterns: '$(System.ArtifactsDirectory)/drop/$(Build.BuildId).tgz'
+              destinationFolder: '$(System.DefaultWorkingDirectory)/'
+              cleanDestinationFolder: false
+            displayName: 'Extract Plan Artifact'
+
+          - task: TerraformCLI@0
+            inputs:
+              command: "apply"
+              commandOptions: '$(System.DefaultWorkingDirectory)/terraform.tfplan'
+            name: "apply"
+            env:
+              HTTPS_PROXY: $(HTTPS_PROXY)
+              ARM_CLIENT_ID: $(AZURE_CLIENT_ID)
+              ARM_CLIENT_SECRET: $(AZURE_CLIENT_SECRET)
+            displayName: "Run > terraform plan"

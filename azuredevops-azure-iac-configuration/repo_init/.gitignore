@@ -1,0 +1,5 @@
+**/*.tfstate
+setEnv.ps1
+setEnv.sh
+setenv.ps1
+setenv.sh

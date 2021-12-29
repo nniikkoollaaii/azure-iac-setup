@@ -1,0 +1,5 @@
+**/setEnv.sh
+.devcontainer.json
+.terraform
+*.tfstate
+*.tfstate.backup
